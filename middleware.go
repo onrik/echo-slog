@@ -13,31 +13,29 @@ type Skipper func(c echo.Context) bool
 
 // Config defines the config for Logger middleware.
 type Config struct {
+	// Logger - slog instance
 	Logger *slog.Logger
 
 	// Skipper defines a function to skip middleware.
 	Skipper Skipper
 
-	// Fields available for logging
-	// - id (Request ID)
-	// - ip
-	// - host
-	// - referer
-	// - user_agent
-	// - status
-	// - latency
-	// - headers
-	Fields []string
-	Status int
+	// Fields - list of fields
+	Fields []Field
+
+	// MinStatus - minimum http status value for logging
+	MinStatus int
+
+	Attrs func(config Config, c echo.Context, start time.Time) []any
 }
 
 var (
 	// DefaultConfig is the default Logger middleware config.
 	DefaultConfig = Config{
-		Logger:  slog.Default(),
-		Skipper: func(c echo.Context) bool { return false },
-		Fields:  []string{"ip", "latency", "status"},
-		Status:  0,
+		Logger:    slog.Default(),
+		Skipper:   func(c echo.Context) bool { return false },
+		Fields:    FieldsDefault(),
+		Attrs:     AttrsDefault,
+		MinStatus: 0,
 	}
 )
 
@@ -54,68 +52,45 @@ func Middleware(config Config) echo.MiddlewareFunc {
 	if config.Logger == nil {
 		config.Logger = DefaultConfig.Logger
 	}
+	if config.Attrs == nil {
+		config.Attrs = DefaultConfig.Attrs
+	}
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) (err error) {
 			if config.Skipper(c) {
 				return next(c)
 			}
-			l := config.Logger.With()
 
 			req := c.Request()
 			res := c.Response()
 			start := time.Now()
-			if err = next(c); err != nil {
+			err = next(c)
+			if err != nil {
 				c.Error(err)
-				l = l.With("error", err)
 			}
-			stop := time.Now()
-
-			if res.Status < config.Status {
-				return
+			if res.Status < config.MinStatus {
+				return err
 			}
 
-			path := req.URL.Path
-			if path == "" {
-				path = "/"
-			}
-
-			for _, field := range config.Fields {
-				switch field {
-				case "id":
-					id := req.Header.Get(echo.HeaderXRequestID)
-					if id == "" {
-						id = res.Header().Get(echo.HeaderXRequestID)
-					}
-					l = l.With(field, id)
-				case "ip":
-					l = l.With(field, c.RealIP())
-				case "host":
-					l = l.With(field, req.Host)
-				case "referer":
-					l = l.With(field, req.Referer())
-				case "user_agent":
-					l = l.With(field, req.UserAgent())
-				case "status":
-					l = l.With(field, res.Status)
-				case "latency":
-					l = l.With(field, stop.Sub(start).String())
-				case "headers":
-					l = l.With(field, req.Header)
+			attrs := config.Attrs(config, c, start)
+			if err != nil {
+				if _, ok := err.(*echo.HTTPError); !ok {
+					attrs = append(attrs, "error", err)
 				}
 			}
 
-			msg := fmt.Sprintf("%s %s", req.Method, path)
+			msg := fmt.Sprintf("%s %s", req.Method, req.URL.Path)
 			switch {
 			case res.Status >= 500:
-				l.Error(msg)
+				config.Logger.Error(msg, attrs...)
 			case res.Status >= 400:
-				l.Warn(msg)
+				config.Logger.Warn(msg, attrs...)
 			default:
-				l.Debug(msg)
+				config.Logger.Info(msg, attrs...)
 			}
 
-			return
+			return err
 		}
 	}
 }

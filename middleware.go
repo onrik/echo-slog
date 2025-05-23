@@ -1,6 +1,7 @@
 package echoslog
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -31,7 +32,6 @@ type Config struct {
 var (
 	// DefaultConfig is the default Logger middleware config.
 	DefaultConfig = Config{
-		Logger:    slog.Default(),
 		Skipper:   func(c echo.Context) bool { return false },
 		Fields:    FieldsDefault(),
 		Attrs:     AttrsDefault,
@@ -49,9 +49,11 @@ func Middleware(config Config) echo.MiddlewareFunc {
 	if config.Skipper == nil {
 		config.Skipper = DefaultConfig.Skipper
 	}
+
 	if config.Logger == nil {
-		config.Logger = DefaultConfig.Logger
+		config.Logger = slog.Default()
 	}
+
 	if config.Attrs == nil {
 		config.Attrs = DefaultConfig.Attrs
 	}
@@ -75,7 +77,8 @@ func Middleware(config Config) echo.MiddlewareFunc {
 
 			attrs := config.Attrs(config, c, start)
 			if err != nil {
-				if _, ok := err.(*echo.HTTPError); !ok {
+				var httpError *echo.HTTPError
+				if !errors.As(err, &httpError) {
 					attrs = append(attrs, "error", err)
 				}
 			}
